@@ -10,6 +10,14 @@ import streamlit as st
 import pycountry
 import plotly.express as px
 
+@st.cache_data
+def load_fallback_trade_data():
+    path = r"C:\Users\SWAPNIL BHADRA\OneDrive\Desktop\Code2Create\Conflict-Simulator-Dasboard\hardcoded_trade_shares_full.csv"
+    df = pd.read_csv(path)
+    return df
+
+FALLBACK_TRADE = load_fallback_trade_data()
+
 # ---------------------------
 # Page config & styling
 # ---------------------------
@@ -20,31 +28,24 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+
 st.markdown(
     """
     <style>
-      .app-title h1 {font-size: 1.9rem; margin-bottom: .25rem}
-      .subtle {color:rgba(255,255,255,0.65) !important}
-      .metric-card {
-          border-radius: 16px; padding: 16px 18px; margin-bottom: 8px;
-          background: rgba(120,120,120,0.08); border: 1px solid rgba(127,127,127,.18);
-      }
-      .metric-label {font-size:.9rem; opacity:.75; margin-bottom:6px}
-      .metric-value {font-weight:700; font-size:1.35rem}
-      .metric-delta {font-size:.9rem; opacity:.85}
-      .dataframe .row_heading.level0 {display:none}
-      .stAlert {margin-top: .25rem}
-      .section-h {margin-top: .75rem}
-      .pill {
-          padding: 4px 10px; border-radius: 999px; font-size:.8rem; 
-          border: 1px solid rgba(127,127,127,.25);
-          background: rgba(120,120,120,0.08);
-          margin-left:6px
-      }
+    /* Full-page background for Streamlit */
+    .stApp {
+        background: linear-gradient(to bottom, rgba(0,0,0,0.5), rgba(0,0,0,0.5)),
+                    url('https://www.whitehouse.gov/wp-content/uploads/2025/01/Donald-J-Trump.jpg');
+        background-size: cover;
+        background-position: center;
+        background-attachment: fixed;
+    }
     </style>
     """,
-    unsafe_allow_html=True,
+    unsafe_allow_html=True
 )
+
+
 
 # ---------------------------
 # HARDCODED FALLBACK DATA
@@ -214,6 +215,22 @@ MARKET_SIZES = {
 # ---------------------------
 # Helpers
 # ---------------------------
+# Example: estimate export values
+def estimate_exports_from_fallback(hs_code, global_market_size):
+    subset = FALLBACK_TRADE[FALLBACK_TRADE["hs_code"] == str(hs_code)]
+    results = []
+    for exporter, group in subset.groupby("exporter_iso"):
+        total_share = group["share"].sum()
+        export_value = total_share * global_market_size
+        for _, row in group.iterrows():
+            results.append({
+                "exporter": exporter,
+                "importer": row["importer_iso"],
+                "share": row["share"],
+                "value": row["share"] * global_market_size
+            })
+    return pd.DataFrame(results)
+
 def iso_to_name(iso):
     try:
         country = pycountry.countries.get(alpha_3=iso)
@@ -244,31 +261,20 @@ def fetch_worldbank_gdp(isos, year=2022) -> pd.DataFrame:
             gdp_data.append({'iso': iso, 'gdp_usd_billion': HARDCODED_GDP_DATA[iso]})
     return pd.DataFrame(gdp_data)
 
-def fetch_comtrade_exports(commodity_code="2709", year=2022) -> pd.DataFrame:
+def fetch_comtrade_exports(hs_code: str, year: int):
     try:
-        url = f"https://comtrade.un.org/api/get?max=50000&type=C&freq=A&px=HS&ps={year}&r=all&p=0&rg=2&cc={commodity_code}&fmt=csv"
-        r = requests.get(url, timeout=30)
-        r.raise_for_status()
-        df = pd.read_csv(io.StringIO(r.text))
-        if len(df) > 0:
-            return df[["Reporter ISO", "Trade Value (US$)"]].rename(
-                columns={"Reporter ISO": "iso", "Trade Value (US$)": "export_value_usd"}
-            )
+        # your existing Comtrade API call here
+        return api_exports_df  
     except Exception:
-        pass
-    
-    # Fallback to hardcoded data
-    if commodity_code in HARDCODED_EXPORT_DATA:
-        export_data = []
-        for iso, value in HARDCODED_EXPORT_DATA[commodity_code].items():
-            export_data.append({'iso': iso, 'export_value_usd': value})
-        return pd.DataFrame(export_data)
-    else:
-        # Default fallback for unknown commodities
-        export_data = []
-        for iso, value in DEFAULT_EXPORT_DATA.items():
-            export_data.append({'iso': iso, 'export_value_usd': value})
-        return pd.DataFrame(export_data)
+        st.warning("⚠ Comtrade fetch failed — using fallback CSV data")
+        df = FALLBACK_TRADE
+        # filter for this commodity
+        subset = df[df["hs_code"] == str(hs_code)]
+        if subset.empty:
+            st.error("No fallback data found for this HS code")
+            return pd.DataFrame()
+        return subset
+
 
 # ---------------------------
 # Oil HS codes
@@ -351,7 +357,7 @@ else:
     isos = set()
 
 with st.spinner("Fetching trade data…"):
-    comtrade_agg = fetch_comtrade_exports(commodity_code=commodity_choice, year=year_choice)
+    comtrade_agg = fetch_comtrade_exports(hs_code=commodity_choice, year=year_choice)
 
 with st.spinner("Fetching GDP data…"):
     all_isos = set(comtrade_agg["iso"].unique()) if not comtrade_agg.empty else set(HARDCODED_GDP_DATA.keys())
