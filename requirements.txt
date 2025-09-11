@@ -1,0 +1,15 @@
+# Core
+streamlit==1.37.0
+pandas==2.2.2
+numpy==1.26.4
+requests==2.32.3
+
+# Visualization
+plotly==5.23.0
+pycountry==24.6.1
+
+# Machine Learning (optional, for prediction models)
+scikit-learn==1.5.1
+
+# Jupyter (optional, for dev notebooks)
+ipython==8.26.0

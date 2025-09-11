@@ -1,307 +1,196 @@
-import io
-import requests
-import pandas as pd
-import streamlit as st
-import pycountry
-import plotly.express as px
+# conflict_simulator_best_ai.py
+import io, os, numpy as np, pandas as pd, requests, streamlit as st
+import plotly.express as px, plotly.graph_objects as go, pycountry, joblib
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
+st.set_page_config(page_title="Conflict Simulator — AI", page_icon="🛢", layout="wide")
 
-st.set_page_config(
-    page_title="Conflict Simulator Dashboard",
-    page_icon="🛢",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+def _session(retries=1, backoff=0.4, timeout=20):
+    s = requests.Session()
+    r = Retry(total=retries, connect=retries, read=retries, status=retries,
+              backoff_factor=backoff, status_forcelist=[429,500,502,503,504],
+              allowed_methods=["GET"], raise_on_status=False)
+    s.mount("https://", HTTPAdapter(max_retries=r)); s.mount("http://", HTTPAdapter(max_retries=r))
+    s.timeout = timeout; return s
 
-st.markdown(
-    """
-    <style>
-      .app-title h1 {font-size: 1.9rem; margin-bottom: .25rem}
-      .subtle {color:rgba(255,255,255,0.65) !important}
-      .metric-card {
-          border-radius: 16px; padding: 16px 18px; margin-bottom: 8px;
-          background: rgba(120,120,120,0.08); border: 1px solid rgba(127,127,127,.18);
-      }
-      .metric-label {font-size:.9rem; opacity:.75; margin-bottom:6px}
-      .metric-value {font-weight:700; font-size:1.35rem}
-      .metric-delta {font-size:.9rem; opacity:.85}
-      .dataframe .row_heading.level0 {display:none}
-      .stAlert {margin-top: .25rem}
-      .section-h {margin-top: .75rem}
-      .pill {
-          padding: 4px 10px; border-radius: 999px; font-size:.8rem; 
-          border: 1px solid rgba(127,127,127,.25);
-          background: rgba(120,120,120,0.08);
-          margin-left:6px
-      }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+HTTP = _session()
+
 def iso_to_name(iso):
-    """Convert ISO3 code to full country name. Fallback to ISO string if unknown."""
     try:
-        country = pycountry.countries.get(alpha_3=iso)
-        return country.name if country else iso
+        c = pycountry.countries.get(alpha_3=iso)
+        return c.name if c else iso
     except Exception:
         return iso
 
-def fetch_owid_series(grapher_slug: str) -> pd.DataFrame:
-    """Fetch OWID dataset and standardize to: country, iso, year, value"""
-    url = f"https://ourworldindata.org/grapher/{grapher_slug}.csv"
-    r = requests.get(url, timeout=30)
-    r.raise_for_status()
-    df = pd.read_csv(io.StringIO(r.text))
+def _normalize_owid(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.rename(columns={"Entity":"country","Code":"iso","Year":"year"})
+    val = [c for c in df.columns if c not in ("country","iso","year")][-1]
+    return df.rename(columns={val:"value"})[["country","iso","year","value"]]
 
-    
-    df = df.rename(columns={"Entity": "country", "Code": "iso", "Year": "year"})
-    value_col = [c for c in df.columns if c not in ["country", "iso", "year"]][-1]
-    df = df.rename(columns={value_col: "value"})
-    return df[["country", "iso", "year", "value"]]
+@st.cache_data(show_spinner=False)
+def fetch_owid_series(slug: str) -> pd.DataFrame:
+    url = f"https://ourworldindata.org/grapher/{slug}.csv"
+    resp = HTTP.get(url); resp.raise_for_status()
+    return _normalize_owid(pd.read_csv(io.StringIO(resp.text)))
 
-def extract_owid_for_year(df: pd.DataFrame, year: int) -> pd.DataFrame:
-    """Filter OWID dataframe to a given year"""
-    return df[df["year"] == year].copy()
+def extract_year(df, y): return df[df["year"] == y].copy()
 
-# Dummy GDP fetcher (replace with API if you want)
-def fetch_worldbank_gdp(isos, year_from=2020, year_to=2022) -> pd.DataFrame:
-    """Fake GDP fetcher for demo — replace with real API if needed"""
-    return pd.DataFrame({
-        "iso3": list(isos),
-        "year": [year_to] * len(isos),
-        "gdp_usd_billion": [500] * len(isos)  
-    })
-
-# Dummy Comtrade fetcher
-def fetch_comtrade_exports(commodity_code="2709", year=2022) -> pd.DataFrame:
-    """Try Comtrade API, but return empty if fails (safe)"""
-    url = f"https://comtrade.un.org/api/get?max=50000&type=C&freq=A&px=HS&ps={year}&r=all&p=0&rg=2&cc={commodity_code}&fmt=csv"
+@st.cache_data(show_spinner=False)
+def fetch_worldbank_gdp_or_fallback(isos, year: int) -> pd.DataFrame:
     try:
-        r = requests.get(url, timeout=30)
-        r.raise_for_status()
-        df = pd.read_csv(io.StringIO(r.text))
-        return df[["Reporter ISO", "Trade Value (US$)"]].rename(
-            columns={"Reporter ISO": "iso", "Trade Value (US$)": "export_value_usd"}
-        )
-    except Exception:
-        return pd.DataFrame(columns=["iso", "export_value_usd"])
+        iso_list = list(isos)[:50]
+        url = f"http://api.worldbank.org/v2/country/{';'.join(iso_list)}/indicator/NY.GDP.MKTP.CD?format=json&date={year}"
+        r = HTTP.get(url); r.raise_for_status()
+        data = r.json(); rows = []
+        if isinstance(data, list) and len(data) > 1 and isinstance(data[1], list):
+            for item in data[1]:
+                if item.get("value") is not None:
+                    rows.append({"iso": item["country"]["id"], "gdp_usd_billion": float(item["value"]) / 1e9})
+        if rows: return pd.DataFrame(rows)
+    except Exception: pass
+    fallback = {'USA':23315,'CHN':17734,'JPN':4937,'DEU':4072,'IND':3385,'GBR':3070,'FRA':2782,'ITA':2059,'CAN':2015,'KOR':1798,'RUS':1776,'BRA':1609,'AUS':1542,'ESP':1387,'MEX':1274,'IDN':1186}
+    return pd.DataFrame({"iso":[i for i in isos], "gdp_usd_billion":[fallback.get(i[-3:],50.0) for i in isos]})
 
-# ---------------------------
-# Header / Hero
-# ---------------------------
-left, right = st.columns([0.7, 0.3])
+left, right = st.columns([0.7,0.3])
 with left:
-    st.markdown('<div class="app-title"><h1>🛢 Conflict Simulator Dashboard</h1></div>', unsafe_allow_html=True)
-    st.caption("Real-time what-if economics on oil supply shocks. Clean UI, same logic.")
+    st.markdown("## 🛢 Conflict Simulator — Deterministic + AI")
+    st.caption("Deterministic macro + supervised AI trained on historical GDP growth surprises.")
 with right:
-    st.markdown(
-        '<div style="text-align:right;margin-top:4px">'
-        '<span class="pill">OWID</span><span class="pill">World Bank (dummy)</span>'
-        '<span class="pill">UN Comtrade (best-effort)</span>'
-        '</div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown('<div style="text-align:right"><span style="padding:4px 10px;border:1px solid #8882;border-radius:999px;margin-left:6px;">OWID</span><span style="padding:4px 10px;border:1px solid #8882;border-radius:999px;margin-left:6px;">World Bank / fallback</span><span style="padding:4px 10px;border:1px solid #8882;border-radius:999px;margin-left:6px;">AI (model.joblib)</span></div>', unsafe_allow_html=True)
 
-# ---------------------------
-# Sidebar Controls
-# ---------------------------
 st.sidebar.header("⚙ Controls")
-commodity_choice = st.sidebar.text_input("Commodity code (HS)", "2709")
 year_choice = st.sidebar.number_input("Year", value=2022, min_value=1990, step=1)
-
+severity = st.sidebar.slider("Export cut severity (target exporter)", 0, 100, 50)
+price_sensitivity = st.sidebar.slider("Price sensitivity (global)", 0.5, 3.0, 1.5, step=0.1)
+impact_multiplier = st.sidebar.slider("GDP multiplier (2nd-round effects)", 0.1, 1.5, 0.6, step=0.05)
 st.sidebar.markdown("---")
-st.sidebar.subheader("Model parameters")
-severity = st.sidebar.slider("Export cut severity (%)", 0, 100, 50)
-price_sensitivity = st.sidebar.slider("Price sensitivity factor", 0.5, 3.0, 1.5, step=0.1)
-impact_multiplier = st.sidebar.slider("GDP impact multiplier", 0.1, 1.0, 0.6, step=0.05)
+oil_pass_through = st.sidebar.slider("Pass-through to import bill", 0.2, 1.0, 0.7, step=0.05)
+import_substitution = st.sidebar.slider("Short-run substitution", 0.0, 0.5, 0.15, step=0.05)
+st.sidebar.markdown("---")
+baseline_price = st.sidebar.number_input("Baseline oil price (USD/bbl)", value=70.0, step=1.0)
+st.sidebar.markdown("---")
+use_ai = st.sidebar.checkbox("Enable AI", True)
+ai_weight = st.sidebar.slider("AI weight (vs deterministic)", 0.0, 1.0, 0.6, step=0.05)
 
-baseline_price = 70.0
-
-# ---------------------------
-# Load Data (same sources, nicer messages)
-# ---------------------------
-with st.spinner("Loading OWID oil production & consumption…"):
+with st.spinner("Loading OWID…"):
     prod_df = fetch_owid_series("oil-production-by-country")
     cons_df = fetch_owid_series("oil-consumption-by-country")
+prod_y = extract_year(prod_df, year_choice).dropna(subset=["iso"])
+cons_y = extract_year(cons_df, year_choice).dropna(subset=["iso"])
+isos = set(prod_y["iso"]) | set(cons_y["iso"])
 
-prod_year_df = extract_owid_for_year(prod_df, year_choice).dropna(subset=["iso"])
-cons_year_df = extract_owid_for_year(cons_df, year_choice).dropna(subset=["iso"])
-isos = set(prod_year_df["iso"].unique()) | set(cons_year_df["iso"].unique())
+with st.spinner("Fetching GDP…"):
+    gdp_df = fetch_worldbank_gdp_or_fallback(isos, year_choice)
 
-st.success(f"OWID loaded for {year_choice}: {len(prod_year_df)} production rows · {len(cons_year_df)} consumption rows")
-
-with st.spinner("Fetching trade (exports) data from UN Comtrade…"):
-    comtrade_agg = fetch_comtrade_exports(commodity_code=commodity_choice, year=year_choice)
-if comtrade_agg.empty:
-    st.warning("Comtrade API fetch failed or returned no data. Falling back to OWID net exports only.")
-
-with st.spinner("Fetching GDP data…"):
-    wb_gdp = fetch_worldbank_gdp(isos, year_from=year_choice-2, year_to=year_choice)
-if wb_gdp.empty or "gdp_usd_billion" not in wb_gdp.columns:
-    st.warning("World Bank GDP data not available. Using fallback GDP = 0.")
-    wb_gdp = pd.DataFrame(columns=["iso3", "gdp_usd_billion"])
-else:
-    wb_gdp = wb_gdp.rename(columns={"iso3": "iso"})
-
-# ---------------------------
-# Merge master dataset (same logic)
-# ---------------------------
 master = pd.DataFrame(sorted(list(isos)), columns=["iso"])
 master["country"] = master["iso"].apply(iso_to_name)
+master = master.merge(prod_y[["iso","value"]].rename(columns={"value":"production_kbpd"}), on="iso", how="left")
+master = master.merge(cons_y[["iso","value"]].rename(columns={"value":"consumption_kbpd"}), on="iso", how="left")
+master = master.merge(gdp_df[["iso","gdp_usd_billion"]], on="iso", how="left")
+master[["production_kbpd","consumption_kbpd","gdp_usd_billion"]] = master[["production_kbpd","consumption_kbpd","gdp_usd_billion"]].fillna(0.0)
+master["net_exports_kbpd"] = (master["production_kbpd"] - master["consumption_kbpd"]).clip(lower=0)
+master["import_dependency_kbpd"] = (master["consumption_kbpd"] - master["production_kbpd"]).clip(lower=0)
 
-master = master.merge(prod_year_df[["iso", "value"]].rename(columns={"value": "production"}), on="iso", how="left")
-master = master.merge(cons_year_df[["iso", "value"]].rename(columns={"value": "consumption"}), on="iso", how="left")
+target_country = st.selectbox("🎯 Target exporter", master.loc[master["net_exports_kbpd"]>0,"country"].sort_values())
+target_iso = master.loc[master["country"]==target_country,"iso"].values[0]
+target_exports_kbpd = master.loc[master["iso"]==target_iso,"net_exports_kbpd"].values[0]
 
-if not comtrade_agg.empty:
-    master = master.merge(comtrade_agg, on="iso", how="left")
-else:
-    master["export_value_usd"] = 0.0
+lost_supply_kbpd = target_exports_kbpd * (severity/100.0)
+total_prod_kbpd = master["production_kbpd"].sum()
+fractional_loss = (lost_supply_kbpd/total_prod_kbpd) if total_prod_kbpd>0 else 0.0
+price_increase_fraction = price_sensitivity * fractional_loss
+new_price = baseline_price * (1.0 + price_increase_fraction)
+delta_price = new_price - baseline_price
 
-if not wb_gdp.empty:
-    master = master.merge(wb_gdp[["iso", "gdp_usd_billion"]], on="iso", how="left")
-else:
-    master["gdp_usd_billion"] = 0.0
+kbpd_to_bpd = 1000.0
+annualized_extra_barrels = master["import_dependency_kbpd"] * kbpd_to_bpd * 365.0
+extra_spend_usd = annualized_extra_barrels * delta_price
+net_extra_spend_usd = extra_spend_usd * oil_pass_through * (1.0 - import_substitution)
+gdp_usd = (master["gdp_usd_billion"] * 1e9).replace(0, np.nan)
+det_pct = -(net_extra_spend_usd / gdp_usd) * 100.0
+det_pct *= impact_multiplier
+det_pct = det_pct.clip(lower=-25.0, upper=5.0).fillna(0.0)
 
-# Compute exports = production - consumption (fallback)
-master["net_exports"] = (master["production"].fillna(0) - master["consumption"].fillna(0)).clip(lower=0)
+master["det_gdp_impact_percent"] = det_pct
+master["det_gdp_change_bn"] = (det_pct/100.0) * master["gdp_usd_billion"]
 
-# ---------------------------
-# Scenario Target
-# ---------------------------
-target_country = st.selectbox("🎯 Choose a country to sanction", master["country"].dropna().unique())
-target_iso = master.loc[master["country"] == target_country, "iso"].values[0]
-target_exports = master.loc[master["iso"] == target_iso, "net_exports"].values[0]
+ai_available = False
+if use_ai and os.path.exists("model.joblib"):
+    try:
+        bundle = joblib.load("model.joblib")
+        pipe = bundle["pipeline"]; feats = bundle["features"]
+        current = pd.DataFrame({
+            "brent_change_pct": np.full(len(master), price_increase_fraction*100.0),
+            "import_dependency_kbpd": master["import_dependency_kbpd"].values,
+            "gdp_usd_billion": master["gdp_usd_billion"].values,
+            "energy_intensity": np.nan,
+            "fx_reserves_import_months": np.nan,
+            "fuel_subsidy_dummy": 0.0,
+            "manufacturing_share": np.nan,
+            "floating_fx_dummy": 0.0,
+        })
+        X_now = current[[c for c in feats if c in current.columns]]
+        ai_pct = pd.Series(pipe.predict(X_now), index=master.index)  # growth surprise (pp) ≈ %∆ level (1y)
+        final_pct = (1.0 - ai_weight) * master["det_gdp_impact_percent"] + ai_weight * ai_pct
+        final_pct = final_pct.clip(lower=-25.0, upper=5.0)
+        master["ai_gdp_impact_percent"] = final_pct
+        master["ai_gdp_change_bn"] = (final_pct/100.0) * master["gdp_usd_billion"]
+        ai_available = True
+    except Exception as e:
+        st.warning(f"AI model not used: {e}")
 
-# ---------------------------
-# Simulate (same math, prettier presentation)
-# ---------------------------
-lost_supply = target_exports * (severity / 100)
-total_supply = master["production"].fillna(0).sum()
-fraction_loss = lost_supply / total_supply if total_supply > 0 else 0.0
+c1,c2,c3,c4 = st.columns(4)
+c1.metric("Target exporter", target_country, target_iso)
+c2.metric("Lost supply (kb/d)", f"{lost_supply_kbpd:,.0f}")
+c3.metric("Baseline price", f"${baseline_price:,.2f}")
+c4.metric("New price", f"${new_price:,.2f}", f"+{price_increase_fraction*100:.2f}%")
 
-price_increase_fraction = price_sensitivity * fraction_loss
-new_price = baseline_price * (1 + price_increase_fraction)
-
-master["import_dependency"] = (master["consumption"].fillna(0) - master["production"].fillna(0)).clip(lower=0)
-extra_cost = master["import_dependency"] * (new_price - baseline_price)
-master["gdp_impact"] = -(extra_cost / (master["gdp_usd_billion"] * 1000)).fillna(0) * impact_multiplier
-master["gdp_change"] = (master["gdp_impact"] * master["gdp_usd_billion"]).fillna(0)
-
-# ---------------------------
-# KPIs (metric cards)
-# ---------------------------
-k1, k2, k3, k4 = st.columns(4)
-k1.markdown(f"""
-<div class="metric-card">
-  <div class="metric-label">Target exporter</div>
-  <div class="metric-value">{target_country}</div>
-  <div class="metric-delta subtle">{target_iso}</div>
-</div>""", unsafe_allow_html=True)
-
-k2.markdown(f"""
-<div class="metric-card">
-  <div class="metric-label">Lost supply (relative)</div>
-  <div class="metric-value">{severity}%</div>
-  <div class="metric-delta subtle">of {target_country}'s net exports</div>
-</div>""", unsafe_allow_html=True)
-
-k3.markdown(f"""
-<div class="metric-card">
-  <div class="metric-label">Baseline oil price</div>
-  <div class="metric-value">${baseline_price:,.2f}</div>
-</div>""", unsafe_allow_html=True)
-
-k4.markdown(f"""
-<div class="metric-card">
-  <div class="metric-label">New oil price</div>
-  <div class="metric-value">${new_price:,.2f}</div>
-  <div class="metric-delta">+{price_increase_fraction*100:.2f}%</div>
-</div>""", unsafe_allow_html=True)
-
-st.markdown("")
-
-# ---------------------------
-# Tabs: Overview | Impacts | Data
-# ---------------------------
-tab1, tab2, tab3 = st.tabs(["📊 Overview", "💥 Impacts", "📁 Data"])
+tab1, tab2 = st.tabs(["📊 Overview","📁 Data"])
 
 with tab1:
-    st.markdown("### Top GDP Impacts")
-    top = master.sort_values("gdp_change", ascending=True).head(15)  # most negative first
-    fig = px.bar(
-        top,
-        x="gdp_change",
-        y="country",
-        orientation="h",
-        title="Projected GDP change (USD billions)",
-        labels={"gdp_change": "Δ GDP (USD bn)", "country": ""},
-        text=top["gdp_change"].round(2),
-    )
+    show_col = "ai_gdp_change_bn" if ai_available else "det_gdp_change_bn"
+    st.markdown(f"### Top GDP losses — *{'AI-blended' if ai_available else 'Deterministic'}* (USD bn)")
+    top = master.sort_values(show_col).head(15)
+    fig = px.bar(top, x=show_col, y="country", orientation="h",
+                 labels={show_col:"Δ GDP (USD bn)", "country":""},
+                 text=top[show_col].round(2))
     fig.update_traces(textposition="outside")
-    fig.update_layout(height=500, margin=dict(l=10, r=10, t=50, b=10))
+    fig.update_layout(height=500, margin=dict(l=10,r=10,t=50,b=10))
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### World Map — GDP Change")
-    # Plotly expects ISO-3 codes in 'locations'
-    map_df = master.copy()
-    map_df["iso3"] = map_df["iso"]
-    fig_map = px.choropleth(
-        map_df,
-        locations="iso3",
-        color="gdp_change",
-        color_continuous_scale="RdBu",
-        title="GDP change (USD billions) — darker red = larger loss",
-        labels={"gdp_change": "Δ GDP (USD bn)"},
-    )
-    fig_map.update_layout(height=520, margin=dict(l=10, r=10, t=50, b=10))
+    st.markdown("### World map — GDP impact (% of GDP)")
+    map_df = master.copy(); map_df["iso3"] = map_df["iso"]
+    color_col = "ai_gdp_impact_percent" if ai_available else "det_gdp_impact_percent"
+    fig_map = px.choropleth(map_df, locations="iso3", color=color_col,
+                            color_continuous_scale="RdBu", range_color=[-5,0],
+                            labels={color_col:"Δ GDP (%)"},
+                            title="Negative = loss (AI-blended if available)")
+    fig_map.update_geos(showcountries=True, countrycolor="#666", countrywidth=0.7,
+                        showcoastlines=True, coastlinecolor="#666",
+                        showframe=False, projection_type="natural earth")
+    fig_map.update_layout(height=520, margin=dict(l=10,r=10,t=50,b=10))
     st.plotly_chart(fig_map, use_container_width=True)
 
 with tab2:
-    c1, c2 = st.columns([0.6, 0.4])
+    cols = ["country","production_kbpd","consumption_kbpd","net_exports_kbpd","import_dependency_kbpd",
+            "gdp_usd_billion","det_gdp_impact_percent","det_gdp_change_bn"]
+    if ai_available:
+        cols += ["ai_gdp_impact_percent","ai_gdp_change_bn"]
+    show = master[cols].rename(columns={
+        "production_kbpd":"Prod (kb/d)","consumption_kbpd":"Cons (kb/d)","net_exports_kbpd":"Net exp (kb/d)",
+        "import_dependency_kbpd":"Import dep (kb/d)","gdp_usd_billion":"GDP (USD bn)",
+        "det_gdp_impact_percent":"Det ΔGDP (%)","det_gdp_change_bn":"Det ΔGDP (USD bn)",
+        "ai_gdp_impact_percent":"AI ΔGDP (%)","ai_gdp_change_bn":"AI ΔGDP (USD bn)"})
+    st.dataframe(show.head(12).style.format({
+        "Prod (kb/d)":"{:,.0f}","Cons (kb/d)":"{:,.0f}","Net exp (kb/d)":"{:,.0f}",
+        "Import dep (kb/d)":"{:,.0f}","GDP (USD bn)":"{:,.1f}",
+        "Det ΔGDP (%)":"{:+.2f}","Det ΔGDP (USD bn)":"{:+.2f}",
+        "AI ΔGDP (%)":"{:+.2f}","AI ΔGDP (USD bn)":"{:+.2f}",
+    }), height=380)
 
-    with c1:
-        st.markdown("#### Import Dependency vs. GDP Change")
-        bubble = master.copy()
-        bubble["size"] = (bubble["import_dependency"].fillna(0) + 1)  # visual size
-        fig2 = px.scatter(
-            bubble,
-            x="import_dependency",
-            y="gdp_change",
-            size="size",
-            hover_name="country",
-            labels={"import_dependency": "Import dependency (kb/d proxy)", "gdp_change": "Δ GDP (USD bn)"},
-            title="Countries with high import dependency tend to lose more",
-        )
-        fig2.update_layout(height=480, margin=dict(l=10, r=10, t=50, b=10))
-        st.plotly_chart(fig2, use_container_width=True)
-
-    with c2:
-        st.markdown("#### Quick Table (Top 20 loss)")
-        tbl = master.sort_values("gdp_change").head(20)[
-            ["country", "production", "consumption", "net_exports", "gdp_usd_billion", "gdp_change"]
-        ].rename(columns={
-            "country": "Country",
-            "production": "Production",
-            "consumption": "Consumption",
-            "net_exports": "Net Exports",
-            "gdp_usd_billion": "GDP (USD bn)",
-            "gdp_change": "Δ GDP (USD bn)",
-        })
-        st.dataframe(
-            tbl.style.format({
-                "Production": "{:,.0f}",
-                "Consumption": "{:,.0f}",
-                "Net Exports": "{:,.0f}",
-                "GDP (USD bn)": "{:,.1f}",
-                "Δ GDP (USD bn)": "{:+.2f}",
-            }),
-            height=480
-        )
-
-with tab3:
-    st.markdown("#### Merged dataset (sample of 10)")
-    st.dataframe(master.head(10))
-
-    # Download button
-    csv_bytes = master.to_csv(index=False).encode("utf-8")
-    st.download_button("⬇ Download full results (CSV)", csv_bytes, file_name="conflict_sim_results.csv", mime="text/csv")
+st.markdown("""
+---
+*Deterministic*: −(extra oil import bill / GDP) × pass-through × (1 − substitution) × multiplier.  
+*AI: Supervised model on historical **GDP growth surprises* vs oil shocks & buffers; blended with the deterministic estimate.
+""")
