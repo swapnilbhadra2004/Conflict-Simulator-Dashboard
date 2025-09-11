@@ -31,12 +31,8 @@
 
 ## 📊 System Flow
 
-```mermaid
-flowchart LR
-    A[Data Sources] -->|OWID, Comtrade, World Bank, Custom CSV| B[Data Processing]
-    B --> C[Simulation Engine]
-    C --> D[Visualizations in Streamlit]
-    D --> E[User Insights]
+### User Insights ⚙️ Controls  
+Commodities, Trade, and Impacts
 
 
 ⚙️ Controls
