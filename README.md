@@ -1,83 +1,106 @@
-# 🛢️ Conflict Simulator Dashboard
+# Conflict Simulator Dashboard
 
-> A Streamlit-powered interactive dashboard to simulate **economic impacts of commodity supply shocks** (oil, coal, gas) on countries worldwide.  
-
-![Streamlit](https://img.shields.io/badge/Made%20with-Streamlit-FF4B4B?logo=streamlit&logoColor=white)  
-![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)  
-![License](https://img.shields.io/badge/License-MIT-green.svg)  
-![Status](https://img.shields.io/badge/Status-Active-success)  
+Implementation for **Conflict Simulator Dashboard** — an interactive tool to simulate economic impacts of commodity supply shocks across countries.
 
 ---
 
-## 📸 Demo Preview
+## 📄 Table of Contents
 
-<p align="center">
-  <img src="docs/screenshot_dashboard.png" width="80%" alt="Conflict Simulator Dashboard Preview">
-</p>
-
----
-
-## ✨ Features
-
-✅ Interactive **what-if analysis** of sanctions on resource-exporting countries  
-✅ Choose **commodity type** (Oil, Coal, Gas)  
-✅ Adjust **severity (%)** of supply cut  
-✅ Visualize **oil price changes**  
-✅ See **GDP impacts** on top affected countries  
-✅ Dynamic **world map** heatmap of GDP shocks  
-✅ Download **results as CSV**  
+- [Overview](#overview)  
+- [Demo & Screenshots](#demo--screenshots)  
+- [Installation & Setup](#installation--setup)  
+- [Usage](#usage)  
+- [Controls & Parameters](#controls--parameters)  
+- [AI Simulation & Prediction](#ai-simulation--prediction)  
+- [Data Sources](#data-sources)  
+- [License](#license)  
+- [Contact](#contact)  
 
 ---
 
-## 📊 System Flow
+## Overview
 
-### User Insights ⚙️ Controls  
-Commodities, Trade, and Impacts
+This dashboard lets users:
 
+- Choose a commodity (e.g. Oil, Coal, Gas)  
+- Set the severity of supply cut (sanctions/shock)  
+- View changes in production, consumption, imports/exports  
+- Visualize GDP impact across countries using maps & charts  
+- (Optional) Use AI-based predictions for more realistic impact estimates  
 
-⚙️ Controls
+---
 
-Commodity code (HS): e.g., 2709 for crude oil
+## Demo & Screenshots
 
-Year: Select data year (2020–2024 supported in demo)
+> Screenshots coming soon!
 
-Export cut severity (%): Simulates sanctions severity
+![](doc/screenshot_dashboard.png)  
+![](doc/img.png)  
 
-Price sensitivity factor: Determines oil price volatility
+---
 
-GDP impact multiplier: Adjusts GDP response
+## Installation & Setup
 
+```bash
+# Clone the repo
+git clone https://github.com/your-username/conflict-simulator-dashboard.git
+cd conflict-simulator-dashboard
 
+# Install dependencies
+pip install -r requirements.txt
 
-📈 Visuals
-
-💥 Top GDP Losses → Horizontal bar chart
-
-🗺️ World Map Heatmap → GDP change visualization
-
-📉 Import Dependency vs GDP Change → Bubble chart
-
-📑 Quick Table → Top 20 most impacted
-
-
-
-🧠 Machine Learning Extension
-
-Supports replacing static formulas with ML models:
-
-GradientBoostingRegressor 🚀 (for sequential and random predictions and studying its implications for the real world)
+# Run the app
+streamlit run conflict_simulator_pretty.py
 
 
+Usage
 
-📥 Data Sources
+Select the commodity from the sidebar.
 
-🌍 Our World in Data (OWID)
- – Oil, coal, gas data
+Choose the year of data.
 
-📦 UN Comtrade
- – Trade statistics
+Adjust the export cut severity, price sensitivity, and impact multiplier.
 
-💰 World Bank
- – GDP indicators
+(Optional) Enable AI Impact Prediction for model-based estimates.
 
-📝 Custom dataset – For extended commodities
+Interact with the maps, charts, and tables to analyze outcomes.
+
+
+| Parameter                    | Description                                        |
+| ---------------------------- | -------------------------------------------------- |
+| **Commodity**                | Type of product (Oil, Coal, Gas)                   |
+| **Year**                     | Data year used for production/consumption/GDP etc. |
+| **Export Cut Severity (%)**  | How large the supply cut is for the target country |
+| **Price Sensitivity Factor** | How responsive price is to reduced supply          |
+| **Impact Multiplier**        | Scaling factor for GDP impact calculations         |
+| **Enable AI Prediction**     | Whether to use ML-based estimate vs formula-based  |
+
+
+AI Simulation & Prediction
+
+When enabled, the dashboard trains a model using features like:
+
+Import dependency
+
+Production & consumption scaled by GDP
+
+Net exports
+
+Model types used include:
+
+RandomForestRegressor
+
+(Optional) GradientBoostingRegressor
+
+Outputs include:
+
+Predicted GDP impact percentage
+
+Comparison between basic formula vs AI model
+
+
+Data Sources
+
+Custom CSV dataset (hardcoded_trade_shares_full.csv)
+
+(Previously) OWID, Comtrade, World Bank — now replaced/offline where needed
