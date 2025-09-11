@@ -161,46 +161,46 @@ def iso_to_name(iso):
     except Exception:
         return iso
 
-def fetch_owid_series(grapher_slug: str) -> pd.DataFrame:
-    """Fetch OWID dataset and standardize to: country, iso, year, value"""
-    url = f"https://ourworldindata.org/grapher/{grapher_slug}.csv"
-    r = requests.get(url, timeout=30)
-    r.raise_for_status()
-    df = pd.read_csv(io.StringIO(r.text))
+# def fetch_owid_series(grapher_slug: str) -> pd.DataFrame:
+#     """Fetch OWID dataset and standardize to: country, iso, year, value"""
+#     url = f"https://ourworldindata.org/grapher/{grapher_slug}.csv"
+#     r = requests.get(url, timeout=30)
+#     r.raise_for_status()
+#     df = pd.read_csv(io.StringIO(r.text))
 
-    # Rename standard cols (OWID often provides Entity/Code/Year)
-    df = df.rename(columns={"Entity": "country", "Code": "iso", "Year": "year"})
-    # Find the value column automatically
-    value_col = [c for c in df.columns if c not in ["country", "iso", "year"]][-1]
-    df = df.rename(columns={value_col: "value"})
-    return df[["country", "iso", "year", "value"]]
+#     # Rename standard cols (OWID often provides Entity/Code/Year)
+#     df = df.rename(columns={"Entity": "country", "Code": "iso", "Year": "year"})
+#     # Find the value column automatically
+#     value_col = [c for c in df.columns if c not in ["country", "iso", "year"]][-1]
+#     df = df.rename(columns={value_col: "value"})
+#     return df[["country", "iso", "year", "value"]]
 
 def extract_owid_for_year(df: pd.DataFrame, year: int) -> pd.DataFrame:
     """Filter OWID dataframe to a given year"""
     return df[df["year"] == year].copy()
 
 # Dummy GDP fetcher (replace with API if you want)
-def fetch_worldbank_gdp(isos, year_from=2020, year_to=2022) -> pd.DataFrame:
-    """Fake GDP fetcher for demo — replace with real API if needed"""
-    return pd.DataFrame({
-        "iso3": list(isos),
-        "year": [year_to] * len(isos),
-        "gdp_usd_billion": [500] * len(isos)  # placeholder values
-    })
+# def fetch_worldbank_gdp(isos, year_from=2020, year_to=2022) -> pd.DataFrame:
+#     """Fake GDP fetcher for demo — replace with real API if needed"""
+#     return pd.DataFrame({
+#         "iso3": list(isos),
+#         "year": [year_to] * len(isos),
+#         "gdp_usd_billion": [500] * len(isos)  # placeholder values
+#     })
 
-# Dummy Comtrade fetcher
-def fetch_comtrade_exports(commodity_code="2709", year=2022) -> pd.DataFrame:
-    """Try Comtrade API, but return empty if fails (safe)"""
-    url = f"https://comtrade.un.org/api/get?max=50000&type=C&freq=A&px=HS&ps={year}&r=all&p=0&rg=2&cc={commodity_code}&fmt=csv"
-    try:
-        r = requests.get(url, timeout=30)
-        r.raise_for_status()
-        df = pd.read_csv(io.StringIO(r.text))
-        return df[["Reporter ISO", "Trade Value (US$)"]].rename(
-            columns={"Reporter ISO": "iso", "Trade Value (US$)": "export_value_usd"}
-        )
-    except Exception:
-        return pd.DataFrame(columns=["iso", "export_value_usd"])
+# # Dummy Comtrade fetcher
+# def fetch_comtrade_exports(commodity_code="2709", year=2022) -> pd.DataFrame:
+#     """Try Comtrade API, but return empty if fails (safe)"""
+#     url = f"https://comtrade.un.org/api/get?max=50000&type=C&freq=A&px=HS&ps={year}&r=all&p=0&rg=2&cc={commodity_code}&fmt=csv"
+#     try:
+#         r = requests.get(url, timeout=30)
+#         r.raise_for_status()
+#         df = pd.read_csv(io.StringIO(r.text))
+#         return df[["Reporter ISO", "Trade Value (US$)"]].rename(
+#             columns={"Reporter ISO": "iso", "Trade Value (US$)": "export_value_usd"}
+#         )
+#     except Exception:
+#         return pd.DataFrame(columns=["iso", "export_value_usd"])
 
 # ---------------------------
 # Header / Hero
@@ -243,9 +243,35 @@ baseline_price = 70.0
 # ---------------------------
 # Load Data (same sources, nicer messages)
 # ---------------------------
-with st.spinner("Loading OWID oil production & consumption…"):
-    prod_df = fetch_owid_series("oil-production-by-country")
-    cons_df = fetch_owid_series("oil-consumption-by-country")
+# with st.spinner("Loading OWID oil production & consumption…"):
+#     prod_df = fetch_owid_series("oil-production-by-country")
+#     cons_df = fetch_owid_series("oil-consumption-by-country")
+
+# ---------------------------
+# Load Data (replace OWID + World Bank + Comtrade with your custom dataset)
+# ---------------------------
+with st.spinner("Loading custom energy dataset…"):
+    df_custom = pd.read_csv("hardcoded_trade_shares_full.csv")
+
+# Filter for selected year
+df_year = df_custom[df_custom["year"] == year_choice]
+
+# Filter for selected commodity
+commodity_options = df_year["commodity"].unique()
+commodity_choice = st.sidebar.selectbox("Select a commodity", commodity_options)
+df_filtered = df_year[df_year["commodity"] == commodity_choice]
+
+# Master dataset
+master = df_filtered.copy()
+
+# Compute net exports if missing
+if "net_exports" not in master.columns:
+    master["net_exports"] = (master["production"].fillna(0) - master["consumption"].fillna(0)).clip(lower=0)
+
+# If import_dependency missing, compute it
+if "import_dependency" not in master.columns:
+    master["import_dependency"] = (master["consumption"].fillna(0) - master["production"].fillna(0)).clip(lower=0)
+
 
 prod_year_df = extract_owid_for_year(prod_df, year_choice).dropna(subset=["iso"])
 cons_year_df = extract_owid_for_year(cons_df, year_choice).dropna(subset=["iso"])
@@ -256,8 +282,8 @@ st.success(f"OWID loaded for {year_choice}: {len(prod_year_df)} production rows 
 with st.spinner("Fetching trade (exports) data from UN Comtrade…"):
     comtrade_agg = fetch_comtrade_exports(commodity_code=commodity_choice, year=year_choice)
 
-with st.spinner("Fetching GDP data…"):
-    wb_gdp = fetch_worldbank_gdp(isos, year_from=year_choice-2, year_to=year_choice)
+# with st.spinner("Fetching GDP data…"):
+#     wb_gdp = fetch_worldbank_gdp(isos, year_from=year_choice-2, year_to=year_choice)
 if wb_gdp.empty or "gdp_usd_billion" not in wb_gdp.columns:
     st.warning("World Bank GDP data not available. Using fallback GDP = 0.")
     wb_gdp = pd.DataFrame(columns=["iso3", "gdp_usd_billion"])
